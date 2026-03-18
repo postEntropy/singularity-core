@@ -273,7 +273,7 @@ O `\r` (carriage return) é enviado em vez de `\n` porque o PTY opera em modo ra
 ## 6. Estrutura de Arquivos
 
 ```
-singularity/
+singularity-core/
 ├── Cargo.toml
 └── src/
     ├── main.rs           — event loop winit, renderer wgpu/glyphon, BufferCache
@@ -314,7 +314,7 @@ cargo run
 
 # Release (LTO + opt-level 3)
 cargo build --release
-./target/release/singularity
+./target/release/singularity-core
 
 # Variável de ambiente para logs detalhados
 RUST_LOG=info cargo run

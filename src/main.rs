@@ -1,9 +1,7 @@
 /// main.rs — Singularity Terminal Emulator — Fase 3.5: Multi-sessão
 #[cfg(feature = "renderer")]
-use singularity::{
-    BlockStore, TerminalState, PtyHandle, TerminalEvents, spawn_pty,
-    noop_events, session, rect_renderer
-};
+use singularity_core::session;
+use std::sync::Arc;
 #[cfg(feature = "renderer")]
 use session::Session;
 #[cfg(feature = "renderer")]
@@ -34,11 +32,9 @@ use winit::{
 #[cfg(feature = "renderer")]
 // FONT_W é pub para que o LayoutIndex possa calcular colunas corretamente
 pub const FONT_W: f32 = 8.4;
-#[cfg(feature = "renderer")]
-use winit::event::Modifiers;
 
 #[cfg(feature = "renderer")]
-use singularity::rect_renderer::{Rect, RectRenderer};
+use singularity_core::rect_renderer::{Rect, RectRenderer};
 
 #[cfg(feature = "renderer")]
 const BG_MAIN:  WColor = WColor { r: 0.035, g: 0.039, b: 0.05, a: 1.0 }; // Deep Space #090A0D
@@ -141,6 +137,9 @@ struct AppState {
     manager: SessionManager,
     modifiers: ModifiersState,
     window: Arc<Window>,
+    prompt: String,
+    tab_titles_buffer: glyphon::Buffer,
+    prompt_buffer: glyphon::Buffer,
 }
 
 #[cfg(feature = "renderer")]
@@ -175,7 +174,19 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let Err(e) = state.render() { log::error!("render: {:#}", e); }
+                if let Err(e) = state.render() {
+                    match e {
+                        wgpu::SurfaceError::Timeout => {
+                             // Ignora silenciosamente ou loga em debug — comum em algumas GPUs ao minimizar/trocar aba
+                             log::debug!("render timeout: {:#}", e);
+                        }
+                        wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost => {
+                            // Reconfigura a superfície
+                            state.resize(PhysicalSize::new(state.surface_config.width, state.surface_config.height));
+                        }
+                        _ => log::error!("render error: {:#}", e),
+                    }
+                }
             }
             _ => {}
         }
@@ -186,6 +197,7 @@ impl ApplicationHandler for App {
     }
 }
 
+#[cfg(feature = "renderer")]
 fn init_app(event_loop: &ActiveEventLoop) -> Result<AppState> {
     let window = std::sync::Arc::new(event_loop.create_window(
         Window::default_attributes()
@@ -231,19 +243,43 @@ fn init_app(event_loop: &ActiveEventLoop) -> Result<AppState> {
     let cols = (size.width as f32 / FONT_W) as u16;
     let rows = ((size.height as f32 - INPUT_BOX_H - TAB_BAR_H) / FONT_H) as u16;
 
-    let first_session = Session::new(cols, rows, &mut font_system, "1")?;
+    let first_session = Session::new(cols, rows, &mut font_system, "Terminal 1")?;
     let manager = SessionManager::new(first_session);
+
+    let user = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
+    let host = std::fs::read_to_string("/etc/hostname")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "linux".to_string());
+    let prompt = format!("{}@{}", user, host);
+
+    let mut tab_titles_buffer = glyphon::Buffer::new(&mut font_system, glyphon::Metrics::new(FONT_H * 0.78, FONT_H));
+    tab_titles_buffer.set_size(&mut font_system, Some(size.width as f32), Some(TAB_BAR_H));
+
+    let mut prompt_buffer = glyphon::Buffer::new(&mut font_system, glyphon::Metrics::new(FONT_H * 0.78, FONT_H));
+    prompt_buffer.set_size(&mut font_system, Some(size.width as f32), Some(INPUT_BOX_H));
+    prompt_buffer.set_text(
+        &mut font_system,
+        &format!("{} ", prompt),
+        &glyphon::Attrs::new().family(glyphon::Family::Monospace).color(GColor::rgb(0x00, 0xFF, 0x9F)),
+        glyphon::Shaping::Basic,
+        None,
+    );
+    prompt_buffer.shape_until_scroll(&mut font_system, false);
 
     Ok(AppState {
         device, queue, surface, surface_config,
         font_system, swash_cache, viewport, atlas, text_renderer,
         rect_renderer,
         manager,
-        modifiers: Modifiers::default(),
+        modifiers: ModifiersState::default(),
         window,
+        prompt,
+        tab_titles_buffer,
+        prompt_buffer,
     })
 }
 
+#[cfg(feature = "renderer")]
 #[cfg(feature = "renderer")]
 impl AppState {
     fn resize(&mut self, size: PhysicalSize<u32>) {
@@ -251,6 +287,10 @@ impl AppState {
         self.surface_config.width = size.width;
         self.surface_config.height = size.height;
         self.surface.configure(&self.device, &self.surface_config);
+
+        self.tab_titles_buffer.set_size(&mut self.font_system, Some(size.width as f32), Some(TAB_BAR_H));
+        self.prompt_buffer.set_size(&mut self.font_system, Some(size.width as f32), Some(INPUT_BOX_H));
+
         let cols = (size.width as f32 / FONT_W) as u16;
         let rows = ((size.height as f32 - INPUT_BOX_H - TAB_BAR_H) / FONT_H) as u16;
         // Redimensiona todas as sessões — processos em background precisam saber o tamanho
@@ -264,7 +304,7 @@ impl AppState {
     }
 
     fn handle_key(&mut self, key: Key, _event_loop: &ActiveEventLoop) {
-        let ctrl = self.modifiers.state().control_key();
+        let ctrl = self.modifiers.control_key();
 
         // --- Atalhos globais (Ctrl+...) ---
         if ctrl {
@@ -272,13 +312,13 @@ impl AppState {
                 // Ctrl+T — nova aba
                 Key::Character(s) if s.as_str() == "t" => {
                     let cols = (self.surface_config.width as f32 / FONT_W) as u16;
-                    let rows = ((self.surface_config.height as f32 - INPUT_BOX_H) / FONT_H) as u16;
+                    let rows = ((self.surface_config.height as f32 - INPUT_BOX_H - TAB_BAR_H) / FONT_H) as u16;
                     let n = self.manager.count() + 1;
-                    match Session::new(cols, rows, &mut self.font_system, n.to_string()) {
+                    match Session::new(cols, rows, &mut self.font_system, format!("Terminal {}", n)) {
                         Ok(s) => {
                             self.manager.add(s);
                             self.manager.active = self.manager.sessions.len() - 1;
-                            log::info!("Nova sessão criada: aba {}", n);
+                            log::info!("Nova sessão criada: Terminal {}", n);
                         }
                         Err(e) => log::error!("Falha ao criar sessão: {:#}", e),
                     }
@@ -352,7 +392,7 @@ impl AppState {
         }
     }
 
-    fn render(&mut self) -> Result<()> {
+    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let w = self.surface_config.width as f32;
         let h = self.surface_config.height as f32;
         let scroll_h = h - INPUT_BOX_H;
@@ -366,6 +406,44 @@ impl AppState {
         } else {
             session.update_input_buffer(&mut self.font_system, w);
         }
+
+        // --- Atualiza títulos das abas ---
+        let mut tab_spans = Vec::new();
+        let n_tabs = self.manager.count();
+        let tab_w = (w / n_tabs as f32).min(220.0);
+        
+        for (i, s) in self.manager.sessions.iter().enumerate() {
+            let active = i == self.manager.active;
+            let color = if active { 
+                glyphon::Color::rgb(0x00, 0xD4, 0xFF) // ACCENT
+            } else { 
+                glyphon::Color::rgb(0x80, 0x80, 0x80) // Gray
+            };
+            
+            // Padding para centralizar o texto na aba (aproximado)
+            let title = &s.title;
+            let text_len = title.chars().count() as f32 * FONT_W;
+            let padding = ((tab_w - text_len) / 2.0).max(0.0);
+            let n_spaces = (padding / FONT_W) as usize;
+            
+            tab_spans.push((" ".repeat(n_spaces), glyphon::Attrs::new()));
+            tab_spans.push((title.clone(), glyphon::Attrs::new().color(color).weight(if active { glyphon::Weight::BOLD } else { glyphon::Weight::NORMAL })));
+            
+            // Completa o resto do espaço da aba com espaços para o próximo título
+            let remaining = tab_w - (n_spaces as f32 * FONT_W) - text_len;
+            let n_spaces_rem = (remaining / FONT_W) as usize;
+            tab_spans.push((" ".repeat(n_spaces_rem), glyphon::Attrs::new()));
+        }
+
+        self.tab_titles_buffer.set_size(&mut self.font_system, Some(w), Some(TAB_BAR_H));
+        self.tab_titles_buffer.set_rich_text(
+            &mut self.font_system,
+            tab_spans.iter().map(|(s, a)| (s.as_str(), a.clone())),
+            &glyphon::Attrs::new().family(glyphon::Family::Monospace),
+            glyphon::Shaping::Basic,
+            None,
+        );
+        self.tab_titles_buffer.shape_until_scroll(&mut self.font_system, false);
 
         // --- Enfileira retângulos de background ---
         self.rect_renderer.begin_frame();
@@ -464,23 +542,54 @@ impl AppState {
                     right: (w - MARGIN_X) as i32,
                     bottom: clip_bottom,
                 },
-                default_color: Color::rgb(COL_FG.0, COL_FG.1, COL_FG.2),
+                default_color: GColor::rgb(COL_FG.0, COL_FG.1, COL_FG.2),
                 custom_glyphs: &[],
             });
         }
 
         text_areas.push(TextArea {
-            buffer: &session.cache.input_buffer,
+            buffer: &self.tab_titles_buffer,
+            left: 0.0,
+            top: (TAB_BAR_H - FONT_H) / 2.0,
+            scale: 1.0,
+            bounds: TextBounds {
+                left: 0,
+                top: 0,
+                right: w as i32,
+                bottom: TAB_BAR_H as i32,
+            },
+            default_color: GColor::rgb(0x80, 0x80, 0x80),
+            custom_glyphs: &[],
+        });
+
+        // Prompt (usuário@host)
+        text_areas.push(TextArea {
+            buffer: &self.prompt_buffer,
             left: MARGIN_X + BLOCK_PAD_X,
             top: input_y + (INPUT_BOX_H - FONT_H) / 2.0,
             scale: 1.0,
             bounds: TextBounds {
-                left: 0,
+                left: (MARGIN_X + BLOCK_PAD_X) as i32,
                 top: input_y as i32,
                 right: w as i32,
                 bottom: h as i32,
             },
-            default_color: Color::rgb(0xFF, 0xFF, 0xFF),
+            default_color: GColor::rgb(0x00, 0xFF, 0x9F),
+            custom_glyphs: &[],
+        });
+
+        text_areas.push(TextArea {
+            buffer: &session.cache.input_buffer,
+            left: MARGIN_X + BLOCK_PAD_X + (self.prompt.chars().count() as f32 + 1.0) * FONT_W,
+            top: input_y + (INPUT_BOX_H - FONT_H) / 2.0,
+            scale: 1.0,
+            bounds: TextBounds {
+                left: (MARGIN_X + BLOCK_PAD_X) as i32,
+                top: input_y as i32,
+                right: w as i32,
+                bottom: h as i32,
+            },
+            default_color: GColor::rgb(0xFF, 0xFF, 0xFF),
             custom_glyphs: &[],
         });
 
@@ -494,7 +603,7 @@ impl AppState {
             &mut self.atlas, &self.viewport,
             text_areas,
             &mut self.swash_cache,
-        )?;
+        ).map_err(|_| wgpu::SurfaceError::Lost)?; // glyphon usa Result generic, aqui mapeamos p/ SurfaceError se falhar
 
         let frame = self.surface.get_current_texture()?;
         let view = frame.texture.create_view(&TextureViewDescriptor::default());
@@ -545,7 +654,7 @@ impl AppState {
                 multiview_mask: None,
             });
             // Pass 2: texto sobre os backgrounds
-            self.text_renderer.render(&self.atlas, &self.viewport, &mut pass)?;
+            self.text_renderer.render(&self.atlas, &self.viewport, &mut pass).map_err(|_| wgpu::SurfaceError::Lost)?;
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));

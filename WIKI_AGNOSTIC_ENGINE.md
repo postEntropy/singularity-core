@@ -9,7 +9,7 @@ Para usar o motor em seu próprio projeto (ex: um plugin de IDE, uma interface w
 1. **Implemente a Trait `TerminalEvents`**:
    Esta trait é como o motor fala com você.
    ```rust
-   use singularity::TerminalEvents;
+   use singularity_core::TerminalEvents;
 
    struct MyUI;
    impl TerminalEvents for MyUI {
@@ -24,7 +24,7 @@ Para usar o motor em seu próprio projeto (ex: um plugin de IDE, uma interface w
 
 2. **Inicialize o Motor**:
    ```rust
-   use singularity::{BlockStore, TerminalState, spawn_pty, noop_events};
+   use singularity_core::{BlockStore, TerminalState, spawn_pty, noop_events};
    use std::sync::Arc;
 
    // 1. Crie o seu listener
@@ -58,13 +58,20 @@ Para usar o motor em seu próprio projeto (ex: um plugin de IDE, uma interface w
    }
    ```
 
+4. **Envie Comandos (Input)**:
+   Para enviar o que o utilizador digita de volta para o terminal:
+   ```rust
+   // Envia uma string (ex: comando ls) seguida de Enter (\r)
+   pty.input_tx.send(b"ls -la\r".to_vec()).unwrap();
+   ```
+
 ## Compilação
 
 Se você quer apenas o motor sem as dependências de renderização (`wgpu`, `glyphon`, `winit`), adicione ao seu `Cargo.toml`:
 
 ```toml
 [dependencies]
-singularity = { path = "...", default-features = false }
+singularity_core = { path = "...", default-features = false }
 ```
 
 A feature `renderer` traz o suporte embutido a GPU se você quiser usá-lo como base para uma UI desktop.

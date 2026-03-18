@@ -421,7 +421,7 @@ O `CursorMoved` do winit chama o hit-test passivamente e loga o resultado em `de
 ## 8. Estrutura de Arquivos
 
 ```
-singularity/
+singularity-core/
 ├── Cargo.toml
 └── src/
     ├── main.rs           — event loop winit, SessionManager, renderer wgpu/glyphon, CursorMoved hit-test
@@ -462,7 +462,7 @@ cargo run
 
 # Release (LTO + opt-level 3)
 cargo build --release
-./target/release/singularity
+./target/release/singularity-core
 
 # Variável de ambiente para logs detalhados
 RUST_LOG=info cargo run
