@@ -1,0 +1,30 @@
+[package]
+name = "singularity"
+version = "0.1.0"
+edition = "2021"
+
+# Otimizações de release: LTO + codegen-units=1 para máximo throughput
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+strip = true
+
+[dependencies]
+portable-pty = "0.8"
+crossbeam-channel = "0.5"
+anyhow = "1"
+vte = "0.13"
+log = "0.4"
+env_logger = { version = "0.11", optional = true }
+
+# Renderização GPU (Opcionais via feature 'renderer')
+winit = { version = "0.30", features = ["wayland", "x11"], optional = true }
+wgpu = { version = "28", optional = true }
+glyphon = { version = "0.10", optional = true }
+pollster = { version = "0.4", optional = true }
+bytemuck = { version = "1", features = ["derive"], optional = true }
+
+[features]
+default = ["renderer"]
+renderer = ["dep:winit", "dep:wgpu", "dep:glyphon", "dep:pollster", "dep:bytemuck", "dep:env_logger"]
